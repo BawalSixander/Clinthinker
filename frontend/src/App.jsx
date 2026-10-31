@@ -324,7 +324,7 @@ export default function App() {
     if (!updateOffer) return;
     setUpdateState("downloading");
     try {
-      await api.installUpdate(updateOffer.installer_url);
+      await api.installUpdate();
       window.close();
     } catch {
       setUpdateState("failed");

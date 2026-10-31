@@ -16,6 +16,7 @@ Requirements:
 
 - Windows 10 or 11
 - 64-bit Python 3.10+ and 64-bit Node.js 20.19+ (or 22.12+) with npm
+- Inno Setup 6, with `ISCC.exe` on `PATH` or installed in its default Program Files folder
 - Internet access on the build computer to install dependencies and download
   Microsoft's WebView2 offline installer
 - For OCR of scanned PDFs, install Tesseract OCR with English language data on
@@ -30,11 +31,16 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 The builder compiles the interface and packages the Python API, machine
 learning and document-reading dependencies, and includes Microsoft's x64
-WebView2 offline runtime installer in the app folder. It also adds per-user
-shortcuts to the Windows Desktop and Start menu. The app is created at:
+WebView2 offline runtime installer in the app folder. It also creates a
+per-user Inno Setup installer from the complete PyInstaller `--onedir` output,
+including `Prerequisites`. The installer installs under
+`%LOCALAPPDATA%\Programs\Clinthinker`, closes the running app when upgrading,
+and does not modify the separate `%LOCALAPPDATA%\Clinthinker©\storage` data
+folder. The outputs are:
 
 ```text
 release\Clinthinker©\Clinthinker©.exe
+release\Clinthinker-Setup-2.0.0.exe
 ```
 
 Keep the entire generated app folder together when moving or sharing it,
@@ -45,6 +51,13 @@ installed, the app offers to install it for the current Windows user from the
 included offline installer. The first build can take several minutes and
 produces a sizeable app folder because Python, scikit-learn, document parsers,
 and the WebView2 installer are included.
+
+The setup installer is built by `installer.iss` after PyInstaller completes.
+The build script reads `APP_VERSION` from `backend\app\main.py` and passes it
+to Inno Setup for the plain-ASCII installer filename. Until a matching release
+installer is published, `version.json` intentionally contains no
+`installer_url`, and the app will not offer an update when the manifest version
+matches its own.
 
 ## Run from source
 
@@ -238,8 +251,11 @@ upload files and make predictions, the local Python service must be running
 Clinthinker checks the configured GitHub Pages `version.json` once at startup
 and only when **Check for updates** is selected in Settings. The check sends
 only that manifest request; an installer is downloaded only after selecting
-**Update**. Before launching the installer, the app creates a timestamped
-backup of `assistant.sqlite3` in the storage folder.
+**Update**. The backend accepts installer URLs only from this project's GitHub
+repository and uses the URL from its own fetched manifest. A manifest may
+include a `sha256` field; when present, the installer must match it before
+launch. Before launching the installer, the app creates a timestamped backup
+of `assistant.sqlite3` in the storage folder.
 
 When running from source, local app data is stored in
 `backend\storage\`; desktop builds use the LocalAppData folder above.

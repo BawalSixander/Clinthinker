@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
 import json
 import os
@@ -167,10 +168,6 @@ class RenameSavedSessionRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
 
 
-class InstallUpdateRequest(BaseModel):
-    installer_url: str = Field(min_length=1)
-
-
 _question_batches: OrderedDict[str, dict] = OrderedDict()
 _MAX_QUESTION_BATCHES = 8
 
@@ -236,27 +233,45 @@ def _version_parts(value: object) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in value.split("."))
 
 
+def _fetch_update_manifest() -> dict:
+    with urllib.request.urlopen(UPDATE_MANIFEST_URL, timeout=5) as response:
+        manifest = json.loads(response.read().decode("utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid update manifest.")
+    return manifest
+
+
+def _valid_installer_url(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("https://github.com/seanlordtrillo-ops/Clinthinker/")
+    )
+
+
+def _valid_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[a-fA-F0-9]{64}", value) is not None
+
+
 @app.get("/api/updates/check")
 def check_for_updates() -> dict:
     try:
-        with urllib.request.urlopen(UPDATE_MANIFEST_URL, timeout=5) as response:
-            manifest = json.loads(response.read().decode("utf-8"))
+        manifest = _fetch_update_manifest()
         version = manifest.get("version")
         installer_url = manifest.get("installer_url")
+        sha256 = manifest.get("sha256")
         current_parts = _version_parts(APP_VERSION)
         remote_parts = _version_parts(version)
         if (
             current_parts is None
             or remote_parts is None
             or remote_parts <= current_parts
-            or not isinstance(installer_url, str)
-            or not installer_url.strip()
+            or not _valid_installer_url(installer_url)
+            or (sha256 is not None and not _valid_sha256(sha256))
         ):
             return {"available": False}
         return {
             "available": True,
             "version": version,
-            "installer_url": installer_url,
             "changelog": manifest.get("changelog", ""),
         }
     except Exception:
@@ -264,13 +279,30 @@ def check_for_updates() -> dict:
 
 
 @app.post("/api/updates/install")
-def install_update(request: InstallUpdateRequest) -> dict:
+def install_update() -> dict:
     try:
+        manifest = _fetch_update_manifest()
+        remote_version = _version_parts(manifest.get("version"))
+        current_version = _version_parts(APP_VERSION)
+        if remote_version is None or current_version is None or remote_version <= current_version:
+            raise HTTPException(status_code=409, detail="No newer update is available.")
+        installer_url = manifest.get("installer_url")
+        if not _valid_installer_url(installer_url):
+            raise HTTPException(status_code=422, detail="The installer URL is invalid.")
+        sha256 = manifest.get("sha256")
+        if sha256 is not None and not _valid_sha256(sha256):
+            raise HTTPException(status_code=422, detail="The installer checksum is invalid.")
+
         update_directory = Path(tempfile.mkdtemp(prefix="clinthinker-update-"))
         installer_path = update_directory / "Clinthinker-Setup.exe"
-        with urllib.request.urlopen(request.installer_url, timeout=30) as response:
+        digest = hashlib.sha256()
+        with urllib.request.urlopen(installer_url, timeout=30) as response:
             with installer_path.open("wb") as installer_file:
-                shutil.copyfileobj(response, installer_file)
+                while chunk := response.read(64 * 1024):
+                    installer_file.write(chunk)
+                    digest.update(chunk)
+        if sha256 is not None and digest.hexdigest().casefold() != sha256.casefold():
+            raise HTTPException(status_code=422, detail="The installer checksum does not match.")
 
         if not database.DB_PATH.is_file():
             raise FileNotFoundError("The local database file was not found.")
@@ -278,6 +310,8 @@ def install_update(request: InstallUpdateRequest) -> dict:
         backup_path = database.STORAGE / f"assistant-{backup_time}.sqlite3"
         shutil.copy2(database.DB_PATH, backup_path)
         subprocess.Popen([str(installer_path)], cwd=str(update_directory))
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(status_code=500, detail="Update failed.") from error
     return {"started": True}

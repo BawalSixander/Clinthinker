@@ -52,6 +52,34 @@ try {
     throw "The portable desktop app currently requires 64-bit Windows."
   }
 
+  $mainModule = Get-Content -LiteralPath (Join-Path $backendPath "app\main.py") -Raw
+  $versionMatch = [regex]::Match(
+    $mainModule,
+    'APP_VERSION\s*=\s*"(?<version>\d+\.\d+\.\d+)"'
+  )
+  if (-not $versionMatch.Success) {
+    throw "Could not read APP_VERSION from backend\app\main.py."
+  }
+  $appVersion = $versionMatch.Groups["version"].Value
+
+  $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+  $isccPath = if ($isccCommand) { $isccCommand.Source } else { $null }
+  if (-not $isccPath) {
+    foreach ($candidate in @(
+      "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+      "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+      "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    )) {
+      if (Test-Path -LiteralPath $candidate) {
+        $isccPath = $candidate
+        break
+      }
+    }
+  }
+  if (-not $isccPath) {
+    throw "Inno Setup 6 is required to create the installer. Install it and rerun this build."
+  }
+
   $pythonCommand = Get-ProjectPythonCommand
   if ($null -eq $pythonCommand) {
     throw "Python 3.10+ is required to build the x64 portable desktop app."
@@ -177,9 +205,40 @@ try {
     Remove-Item -LiteralPath $oldStartMenuDirectory
   }
 
+  $installerCompileRoot = Join-Path $env:TEMP (
+    "ClinthinkerInstaller-" + [guid]::NewGuid().ToString("N")
+  )
+  New-Item -ItemType Junction -Path $installerCompileRoot -Target $projectRoot | Out-Null
+  $installerCompileResult = 1
+  try {
+    Push-Location $installerCompileRoot
+    try {
+      & $isccPath "/DAppVersion=$appVersion" `
+        (Join-Path $installerCompileRoot "installer.iss")
+      $installerCompileResult = $LASTEXITCODE
+    }
+    finally {
+      Pop-Location
+    }
+  }
+  finally {
+    if (Test-Path -LiteralPath $installerCompileRoot) {
+      [IO.Directory]::Delete($installerCompileRoot)
+    }
+  }
+  if ($installerCompileResult -ne 0) {
+    throw "Creating the Clinthinker setup installer failed."
+  }
+  $setupInstaller = Join-Path $projectRoot "release\Clinthinker-Setup-$appVersion.exe"
+  if (-not (Test-Path -LiteralPath $setupInstaller)) {
+    throw "The Clinthinker setup installer was not created."
+  }
+
   Write-Host ""
   Write-Host "$appName desktop app created at:"
   Write-Host $appExecutable
+  Write-Host "Setup installer created at:"
+  Write-Host $setupInstaller
   Write-Host "The portable app folder includes the offline WebView2 installer."
   Write-Host "Desktop and Start menu shortcuts were created."
 }

@@ -30,11 +30,7 @@ export const api = {
     return startupUpdateCheck;
   },
   checkForUpdates: () => apiRequest("/api/updates/check"),
-  installUpdate: (installerUrl) => apiRequest("/api/updates/install", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ installer_url: installerUrl })
-  }),
+  installUpdate: () => apiRequest("/api/updates/install", { method: "POST" }),
   uploads: () => apiRequest("/api/uploads"),
   trainingDatasets: () => apiRequest("/api/training-datasets"),
   evaluateTrainingDataset: (trainingDatasetId) => apiRequest("/api/training-datasets/evaluate", {
