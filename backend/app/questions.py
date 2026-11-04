@@ -13,7 +13,12 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from .ml import clean_text, predict_distributions
+from .ml import (
+    clean_text,
+    classify_with_policy,
+    get_decision_policy,
+    predict_distributions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +31,6 @@ DEFAULT_PRIORITY_WEIGHTS = {
     "recent_occurrence": 0.10,
 }
 DEFAULT_SIMILARITY_THRESHOLD = 0.82
-MINIMUM_TOPIC_CONFIDENCE = 0.45
 _DEFINITION = re.compile(
     r"^\s*(?:(?:a|an|the)\s+)?"
     r"([A-Za-z][A-Za-z0-9/-]*(?:\s+[A-Za-z][A-Za-z0-9/-]*){0,3})\s+"
@@ -314,7 +318,12 @@ def extract_exam_stem_templates(
     exam_sources: Sequence[Mapping],
     training_examples: Sequence[tuple[str, str]],
     training_metrics: dict | None = None,
+    dataset_id: str = "builtin",
+    decision_policy: Mapping | None = None,
 ) -> list[dict]:
+    policy = dict(decision_policy) if decision_policy is not None else get_decision_policy(
+        {"id": dataset_id, "examples": training_examples}
+    )
     cache_digest = hashlib.sha256()
     for source in exam_sources:
         cache_digest.update(str(source.get("name", "")).encode("utf-8"))
@@ -326,6 +335,7 @@ def extract_exam_stem_templates(
         cache_digest.update(b"\0")
         cache_digest.update(topic.encode("utf-8"))
         cache_digest.update(b"\0")
+    cache_digest.update(repr(sorted(policy.items())).encode("utf-8"))
     cache_key = cache_digest.hexdigest()
     if cache_key in _EXAM_STEM_TEMPLATE_CACHE:
         _EXAM_STEM_TEMPLATE_CACHE.move_to_end(cache_key)
@@ -399,11 +409,17 @@ def extract_exam_stem_templates(
         stems = classified_stems
     frequencies: Counter[tuple[str, str, str]] = Counter()
     templates = {}
-    for (_, question_type, pattern, template), distribution in zip(stems, distributions):
-        best = distribution[0]
-        if best["confidence"] < MINIMUM_TOPIC_CONFIDENCE:
+    for (stem, question_type, pattern, template), distribution in zip(stems, distributions):
+        classified = classify_with_policy(
+            stem,
+            training_examples,
+            dataset_id,
+            policy,
+            distribution,
+        )
+        if classified["topic"] == "Unclassified":
             continue
-        key = (question_type, best["topic"], pattern)
+        key = (question_type, classified["topic"], pattern)
         frequencies[key] += 1
         templates[key] = template
     templates = [
@@ -458,7 +474,12 @@ def rank_lesson_likelihood(
     heading_terms: Sequence[str] = (),
     list_terms: Sequence[str] = (),
     training_metrics: dict | None = None,
+    dataset_id: str = "builtin",
+    decision_policy: Mapping | None = None,
 ) -> dict:
+    policy = dict(decision_policy) if decision_policy is not None else get_decision_policy(
+        {"id": dataset_id, "examples": training_examples}
+    )
     topics = sorted({label.strip() for _, label in training_examples if label.strip()})
     passages = _lesson_passages(lesson_text)
     distributions = predict_distributions(
@@ -498,8 +519,14 @@ def rank_lesson_likelihood(
     }
     analyzed_passages = []
     for passage_index, (passage, distribution) in enumerate(zip(passages, distributions)):
-        best = distribution[0]
-        topic = best["topic"] if best["confidence"] >= MINIMUM_TOPIC_CONFIDENCE else "Unclassified"
+        classification = classify_with_policy(
+            passage["text"],
+            training_examples,
+            dataset_id,
+            policy,
+            distribution,
+        )
+        topic = classification["topic"]
         cleaned_passage = clean_text(passage["text"])
         passage_tokens = set(cleaned_passage.split())
         emphasized_in_passage = sorted(passage_tokens & set(emphasized))
@@ -516,7 +543,10 @@ def rank_lesson_likelihood(
             {
                 "text": passage["text"],
                 "topic": topic,
-                "confidence": round(float(best["confidence"]), 3),
+                "confidence": round(float(classification["confidence"]), 3),
+                "margin": round(float(classification["margin"]), 3),
+                "models_agree": classification["models_agree"],
+                "abstain_reason": classification["abstain_reason"],
                 "signals": {
                     "heading": is_heading,
                     "definition": passage["definition"],
@@ -567,9 +597,15 @@ def rank_lesson_likelihood(
         ) if source_passages else []
         file_topics = set()
         for passage, distribution in zip(source_passages, source_distributions):
-            best = distribution[0]
-            if best["confidence"] >= MINIMUM_TOPIC_CONFIDENCE:
-                file_topics.add(best["topic"])
+            classified = classify_with_policy(
+                passage["text"],
+                training_examples,
+                dataset_id,
+                policy,
+                distribution,
+            )
+            if classified["topic"] != "Unclassified":
+                file_topics.add(classified["topic"])
         exam_counts.update(file_topics)
         for line in exam_text.splitlines():
             line = line.strip(" \t-•")
@@ -590,9 +626,15 @@ def rank_lesson_likelihood(
             all_exam_question_lines, training_examples
         )
         for line, distribution in zip(all_exam_question_lines, exam_question_distributions):
-            best = distribution[0]
-            if best["confidence"] >= MINIMUM_TOPIC_CONFIDENCE:
-                exam_questions_by_topic.setdefault(best["topic"], []).append(line)
+            classified = classify_with_policy(
+                line,
+                training_examples,
+                dataset_id,
+                policy,
+                distribution,
+            )
+            if classified["topic"] != "Unclassified":
+                exam_questions_by_topic.setdefault(classified["topic"], []).append(line)
     has_exam_evidence = bool(exam_sources)
     maximum_exam_count = max(exam_counts.values(), default=1)
     recent = Counter(topic.casefold() for topic in recent_question_topics)
@@ -894,7 +936,11 @@ def generate_questions(
     preference_feedback: Sequence[Mapping] = (),
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     priority_weights: Mapping[str, float] | None = None,
+    decision_policy: Mapping | None = None,
 ) -> dict:
+    policy = dict(decision_policy) if decision_policy is not None else get_decision_policy(
+        {"id": dataset_id, "examples": training_examples}
+    )
     if question_type not in QUESTION_TYPES:
         raise ValueError("Choose a supported question type.")
     if difficulty not in DIFFICULTIES:
@@ -988,7 +1034,16 @@ def generate_questions(
     lesson_definitions_by_source: dict[tuple[str, str], list[str]] = {}
     for candidate, distribution in zip(candidate_sources, distributions[1:]):
         source, sentence, definition, eligible, source_order = candidate
-        best = distribution[0]
+        classification = classify_with_policy(
+            sentence,
+            training_examples,
+            dataset_id,
+            policy,
+            distribution,
+        )
+        best = {**distribution[0], **classification}
+        if not lesson_mode and best["topic"] == "Unclassified":
+            best["topic"] = distribution[0]["topic"]
         source_key = (
             str(source.get("kind", "course")),
             str(source.get("id") or source.get("name") or ""),
@@ -997,14 +1052,10 @@ def generate_questions(
             lesson_definitions_by_source.setdefault(source_key, []).append(
                 definition[0]
             )
-        if lesson_mode and best["confidence"] < MINIMUM_TOPIC_CONFIDENCE:
-            best = {**best, "topic": "Unclassified"}
+        if lesson_mode and best["topic"] == "Unclassified":
             diagnostics["low_confidence_unclassified"] += 1
         classified.append((source, sentence, definition, eligible, best, source_order))
-        if (
-            definition
-            and best["confidence"] >= MINIMUM_TOPIC_CONFIDENCE
-        ):
+        if definition and best["abstain_reason"] is None:
             definitions_by_source.setdefault(
                 (best["topic"], *source_key), []
             ).append(definition[0])
@@ -1027,7 +1078,7 @@ def generate_questions(
         if best["topic"] not in allowed_topics:
             diagnostics["topic_not_selected"] += 1
             continue
-        if best["confidence"] < MINIMUM_TOPIC_CONFIDENCE:
+        if best["abstain_reason"] is not None:
             if not lesson_mode:
                 diagnostics["below_topic_relevance"] += 1
                 continue
@@ -1345,13 +1396,13 @@ def generate_questions(
         },
         "topic_priorities": ranked_topics,
         "priority_weights": weights,
-        "minimum_topic_confidence": MINIMUM_TOPIC_CONFIDENCE,
+        "minimum_topic_confidence": float(policy["confidence_threshold"]),
         "requested_count": requested_count,
         "shortfall": max(0, requested_count - len(accepted)),
         "shortfall_reason": (
             (
                 "The selected training data did not match source sentences with at least "
-                f"{MINIMUM_TOPIC_CONFIDENCE:.0%} model relevance. Choose a better-matched "
+                f"{float(policy['confidence_threshold']):.0%} model relevance. Choose a better-matched "
                 "dataset or source material."
                 if (
                     not candidates

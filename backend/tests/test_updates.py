@@ -14,7 +14,7 @@ from app import database, main
 class UpdateTests(unittest.TestCase):
     installer_url = (
         "https://github.com/seanlordtrillo-ops/Clinthinker/"
-        "releases/download/v2.0.1/Clinthinker-Setup-2.0.1.exe"
+        "releases/download/v2.0.2/Clinthinker-Setup-2.0.2.exe"
     )
 
     def setUp(self):
@@ -89,7 +89,7 @@ class UpdateTests(unittest.TestCase):
         database.DB_PATH.write_bytes(b"local database")
         installer_bytes = b"installer package"
         manifest = {
-            "version": "2.0.1",
+            "version": "2.0.2",
             "installer_url": self.installer_url,
             "sha256": hashlib.sha256(installer_bytes).hexdigest(),
         }
@@ -122,7 +122,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_install_rejects_non_github_manifest_url(self):
         manifest = {
-            "version": "2.0.1",
+            "version": "2.0.2",
             "installer_url": "https://github.com.attacker.test/setup.exe",
         }
         with patch(
@@ -144,7 +144,7 @@ class UpdateTests(unittest.TestCase):
     def test_install_refuses_checksum_mismatch_before_backup_or_launch(self):
         database.DB_PATH.write_bytes(b"local database")
         manifest = {
-            "version": "2.0.1",
+            "version": "2.0.2",
             "installer_url": self.installer_url,
             "sha256": "0" * 64,
         }

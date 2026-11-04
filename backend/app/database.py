@@ -89,6 +89,19 @@ def initialize() -> None:
                 source_material_name TEXT,
                 source_reference TEXT
             );
+            CREATE TABLE IF NOT EXISTS model_calibration (
+                dataset_id TEXT PRIMARY KEY,
+                dataset_hash TEXT NOT NULL,
+                svm_temperature REAL NOT NULL,
+                ensemble_temperature REAL NOT NULL,
+                confidence_threshold REAL NOT NULL,
+                min_margin REAL NOT NULL,
+                disagreement_abstain INTEGER NOT NULL,
+                target_precision REAL NOT NULL,
+                low_reliability INTEGER NOT NULL,
+                sklearn_version TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE IF NOT EXISTS generated_questions (
                 id TEXT PRIMARY KEY,
                 question_text TEXT NOT NULL,

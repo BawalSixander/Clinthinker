@@ -9,6 +9,41 @@ from app import database
 
 
 class DatabaseMigrationTests(unittest.TestCase):
+    def test_model_calibration_table_initialization_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            storage = Path(temporary)
+            with (
+                patch.object(database, "STORAGE", storage),
+                patch.object(database, "UPLOADS", storage / "uploads"),
+                patch.object(database, "DB_PATH", storage / "assistant.sqlite3"),
+            ):
+                database.initialize()
+                database.initialize()
+                with database.connect() as db:
+                    columns = [
+                        row["name"]
+                        for row in db.execute(
+                            "PRAGMA table_info(model_calibration)"
+                        ).fetchall()
+                    ]
+
+        self.assertEqual(
+            columns,
+            [
+                "dataset_id",
+                "dataset_hash",
+                "svm_temperature",
+                "ensemble_temperature",
+                "confidence_threshold",
+                "min_margin",
+                "disagreement_abstain",
+                "target_precision",
+                "low_reliability",
+                "sklearn_version",
+                "created_at",
+            ],
+        )
+
     def test_backfills_legacy_saved_questions_into_idempotent_sessions(self):
         with tempfile.TemporaryDirectory() as temporary:
             storage = Path(temporary)

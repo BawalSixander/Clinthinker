@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from sklearn import __version__ as sklearn_version
 
 from . import database
 from .database import UPLOADS, connect, get_settings, initialize, save_settings
@@ -33,7 +34,10 @@ from .ml import (
     BUILTIN_TRAINING_TOPICS,
     PREDICTION_METHOD,
     augment_training_examples_with_exam_passages,
+    classify_with_policy,
+    dataset_hash,
     evaluate_classifier,
+    get_decision_policy,
     predict,
 )
 from .parsing import MAX_UPLOAD_BYTES, extract_lesson_features, extract_text, read_limited
@@ -47,7 +51,7 @@ from .questions import (
 )
 
 APP_NAME = "Clinthinker©"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 UPDATE_MANIFEST_URL = "https://seanlordtrillo-ops.github.io/Clinthinker/version.json"
 app = FastAPI(title=APP_NAME, version=APP_VERSION)
 app.add_middleware(
@@ -196,6 +200,26 @@ def _analyze(request: PredictionRequest, progress_callback=None) -> dict:
         training_examples=training_examples,
         progress_callback=progress_callback,
     )
+    decision_policy = get_decision_policy(
+        {"id": dataset_id, "examples": (
+            BUILTIN_TRAINING_EXAMPLES if training_examples is None else training_examples
+        )}
+    )
+    classification = classify_with_policy(
+        request.text,
+        training_examples=training_examples,
+        dataset_id=dataset_id,
+        decision_policy=decision_policy,
+    )
+    predictions = [
+        {
+            **prediction,
+            "margin": classification["margin"],
+            "models_agree": classification["models_agree"],
+            "abstain_reason": classification["abstain_reason"],
+        }
+        for prediction in predictions
+    ]
     analysis_id = str(uuid.uuid4())
     with connect() as db:
         db.execute(
@@ -218,6 +242,7 @@ def _analyze(request: PredictionRequest, progress_callback=None) -> dict:
         "training_dataset_id": dataset_id,
         "training_dataset_name": dataset_name,
         "predictions": predictions,
+        **classification,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -440,6 +465,38 @@ def evaluate_training_dataset(request: EvaluateDatasetRequest) -> dict:
         report = evaluate_classifier(examples)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    policy = report["decision_policy"]
+    with connect() as db:
+        db.execute(
+            "INSERT INTO model_calibration("
+            "dataset_id, dataset_hash, svm_temperature, ensemble_temperature, "
+            "confidence_threshold, min_margin, disagreement_abstain, "
+            "target_precision, low_reliability, sklearn_version) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(dataset_id) DO UPDATE SET "
+            "dataset_hash=excluded.dataset_hash, "
+            "svm_temperature=excluded.svm_temperature, "
+            "ensemble_temperature=excluded.ensemble_temperature, "
+            "confidence_threshold=excluded.confidence_threshold, "
+            "min_margin=excluded.min_margin, "
+            "disagreement_abstain=excluded.disagreement_abstain, "
+            "target_precision=excluded.target_precision, "
+            "low_reliability=excluded.low_reliability, "
+            "sklearn_version=excluded.sklearn_version, "
+            "created_at=datetime('now')",
+            (
+                request.training_dataset_id,
+                dataset_hash(examples),
+                report["calibration"]["svm_temperature"],
+                report["calibration"]["ensemble_temperature"],
+                policy["confidence_threshold"],
+                policy["min_margin"],
+                int(policy["disagreement_abstain"]),
+                policy["target_precision"],
+                int(policy["low_reliability"]),
+                sklearn_version,
+            ),
+        )
     return {
         **report,
         "training_dataset_id": request.training_dataset_id,
@@ -612,6 +669,10 @@ def delete_training_dataset(dataset_id: str) -> dict:
     if dataset_id == "builtin":
         raise HTTPException(status_code=409, detail="Built-in examples cannot be deleted.")
     with connect() as db:
+        db.execute(
+            "DELETE FROM model_calibration WHERE dataset_id=?",
+            (dataset_id,),
+        )
         cursor = db.execute("DELETE FROM training_datasets WHERE id=?", (dataset_id,))
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="Training dataset not found.")
@@ -831,6 +892,9 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
             for batch in _question_batches.values()
             for item in batch["result"]["questions"]
         )
+        decision_policy = get_decision_policy(
+            {"id": request.training_dataset_id, "examples": examples}
+        )
 
         source_upload_rows = list(upload_rows)
         if lesson_ids:
@@ -918,6 +982,8 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
                     examples,
                     exam_sources,
                     training_metrics,
+                    dataset_id=request.training_dataset_id,
+                    decision_policy=decision_policy,
                 )
             )
         style_templates = (
@@ -925,6 +991,8 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
                 exam_sources,
                 classifier_examples,
                 training_metrics,
+                dataset_id=request.training_dataset_id,
+                decision_policy=decision_policy,
             )
             if lesson_ids and request.use_exam_style else []
         )
@@ -945,6 +1013,7 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
             preference_feedback=preference_feedback,
             similarity_threshold=request.similarity_threshold,
             priority_weights=request.priority_weights.model_dump(),
+            decision_policy=decision_policy,
         )
         if lesson_ids:
             lesson_text = "\n\n".join(
@@ -961,6 +1030,8 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
                 heading_terms=lesson_features["heading_terms"],
                 list_terms=lesson_features["list_terms"],
                 training_metrics=training_metrics,
+                dataset_id=request.training_dataset_id,
+                decision_policy=decision_policy,
             )
             result.update(lesson_ranking)
             result["skipped_exam_files"] = skipped_exam_files
@@ -970,7 +1041,7 @@ def generate_practice_questions(request: GenerateQuestionsRequest) -> dict:
                 "fit_count": training_metrics.get("fit_count", 0),
                 "cache_hits": training_metrics.get("cache_hits", 0),
                 "exam_passages_added": exam_passages_added,
-                "minimum_exam_label_confidence": 0.45,
+                "minimum_exam_label_confidence": decision_policy["confidence_threshold"],
             }
             result["style_reference_enabled"] = request.use_exam_style
             result["style_reference_files"] = len(exam_sources) if request.use_exam_style else 0

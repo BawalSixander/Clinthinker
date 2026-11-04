@@ -924,6 +924,8 @@ export default function App() {
       <Sidebar active={page} onNavigate={(next) => {
         setPage(next);
         setMenuOpen(false);
+        setError("");
+        setNotice("");
       }} open={menuOpen} onClose={() => setMenuOpen(false)} />
       <main className="main-area medium-main">
         <header className="topbar">
@@ -1249,6 +1251,10 @@ function PracticeQuestionsPage({
       {!effectiveUploadNames.length && <p className="question-validation-note">Select materials in Settings or upload a lesson above.</p>}
     </div>
 
+    {(preferences?.ratings_recorded > 0 || result?.preference_learning?.applied) && <QuestionPreferenceNotice
+      preferences={preferences}
+      onReset={onResetPreferences}
+    />}
     {error && <div className="app-message app-message-error"><AlertCircle size={16} />{error}</div>}
     {notice && <div className="app-message app-message-success"><Check size={16} />{notice}</div>}
 
@@ -1541,7 +1547,8 @@ function UploadPage({
       </div>
 
       <div className={`upload-layout ${dragging ? "upload-layout-dragging" : ""}`}>
-        <div className="upload-controls">
+        <div className="upload-primary">
+          <div className="upload-controls">
           <button className="upload-dropzone" onClick={() => fileInput.current?.click()}>
             <span className="upload-drop-icon"><FileUp size={25} /></span>
             <strong>Choose files or drag them here</strong>
@@ -1572,9 +1579,9 @@ function UploadPage({
             </button>
           </div>
           <p className="storage-note"><ShieldCheck size={14} /> Files and predictions are saved locally on this computer.</p>
-        </div>
+          </div>
 
-        <aside className="saved-materials">
+          <aside className="saved-materials">
           <div className="section-heading"><div><h3>Saved materials</h3><p>Files stored locally for later use</p></div><span className="count-badge">{uploads.length}</span></div>
           {uploads.length ? <div className="saved-file-list">
             {uploads.map((upload) => <div className="saved-file" key={upload.id}>
@@ -1584,13 +1591,16 @@ function UploadPage({
               <button className="icon-button saved-delete" title={`Delete ${upload.name}`} aria-label={`Delete ${upload.name}`} onClick={() => removeUpload(upload)}><Trash2 size={15} /></button>
             </div>)}
           </div> : <div className="saved-empty"><FolderOpen size={22} /><span>Uploaded files will appear here.</span></div>}
-        </aside>
-      </div>
+          </aside>
+        </div>
 
-      {(busy || progress.length > 0) && <ProgressPanel progress={progress} busy={busy} />}
-      {error && <div className="app-message app-message-error"><AlertCircle size={16} />{error}</div>}
-      {notice && !error && <div className="app-message app-message-success"><Check size={16} />{notice}</div>}
-      <AnalysisOutput analysis={latest} />
+        <div className="upload-results">
+          {(busy || progress.length > 0) && <ProgressPanel progress={progress} busy={busy} />}
+          {error && <div className="app-message app-message-error"><AlertCircle size={16} />{error}</div>}
+          {notice && !error && <div className="app-message app-message-success"><Check size={16} />{notice}</div>}
+          <AnalysisOutput analysis={latest} />
+        </div>
+      </div>
     </section>
   );
 }
@@ -1766,11 +1776,6 @@ function TrainingDataPage({
       </div>
     </div>
     </div>
-    {(preferences?.ratings_recorded > 0 || result?.preference_learning?.applied) && <QuestionPreferenceNotice
-    preferences={preferences}
-    onReset={onResetPreferences}
-    />}
-
     {error && <div className="app-message app-message-error"><AlertCircle size={16} />{error}</div>}
     {notice && !error && <div className="app-message app-message-success"><Check size={16} />{notice}</div>}
   </section>;

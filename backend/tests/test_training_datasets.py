@@ -9,7 +9,7 @@ from unittest.mock import patch
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
-from app import database, main
+from app import database, main, ml
 
 
 class TrainingDatasetTests(unittest.TestCase):
@@ -110,6 +110,14 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertEqual(evaluation.status_code, 200, evaluation.text)
             self.assertEqual(evaluation.json()["training_dataset_name"], "custom")
             self.assertEqual(evaluation.json()["examples_evaluated"], 4)
+            self.assertEqual(len(evaluation.json()["threshold_sweep"]), 66)
+            with database.connect() as db:
+                calibration = db.execute(
+                    "SELECT dataset_hash, confidence_threshold "
+                    "FROM model_calibration WHERE dataset_id=?",
+                    (dataset["id"],),
+                ).fetchone()
+            self.assertIsNotNone(calibration)
 
             response = client.post(
                 "/api/predict/stream",
@@ -128,6 +136,43 @@ class TrainingDatasetTests(unittest.TestCase):
             result = json.loads(result_event)
             self.assertEqual(result["training_dataset_name"], "custom")
             self.assertEqual(result["predictions"][0]["topic"], "Botany")
+            for key in ("margin", "models_agree", "abstain_reason"):
+                self.assertIn(key, result)
+            for key in ("margin", "models_agree", "abstain_reason"):
+                self.assertIn(key, result["predictions"][0])
+            self.assertEqual(
+                client.get("/api/analysis/latest").json()["training_dataset_id"],
+                dataset["id"],
+            )
+            with database.connect() as db:
+                db.execute(
+                    "UPDATE training_examples SET text=? "
+                    "WHERE dataset_id=? AND rowid=("
+                    "SELECT MIN(rowid) FROM training_examples WHERE dataset_id=?"
+                    ")",
+                    ("changed training text", dataset["id"], dataset["id"]),
+                )
+                changed_rows = db.execute(
+                    "SELECT text, topic FROM training_examples "
+                    "WHERE dataset_id=? ORDER BY rowid",
+                    (dataset["id"],),
+                ).fetchall()
+            stale_policy = main.get_decision_policy(
+                {
+                    "id": dataset["id"],
+                    "examples": [(row["text"], row["topic"]) for row in changed_rows],
+                }
+            )
+            self.assertEqual(stale_policy, ml.LEGACY_DECISION_POLICY)
+            deleted = client.delete(f"/api/training-datasets/{dataset['id']}")
+            self.assertEqual(deleted.status_code, 200, deleted.text)
+            with database.connect() as db:
+                self.assertIsNone(
+                    db.execute(
+                        "SELECT dataset_id FROM model_calibration WHERE dataset_id=?",
+                        (dataset["id"],),
+                    ).fetchone()
+                )
             self.assertEqual(
                 client.get("/api/analysis/latest").json()["training_dataset_id"],
                 dataset["id"],

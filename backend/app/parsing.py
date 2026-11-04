@@ -23,6 +23,13 @@ async def read_limited(upload: UploadFile, maximum: int = MAX_UPLOAD_BYTES) -> b
     return content
 
 
+def _decode_plain_text(content: bytes) -> str:
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return content.decode("cp1252")
+
+
 def extract_text(filename: str, content: bytes) -> str:
     extension = Path(filename).suffix.lower()
     if extension not in ALLOWED_MATERIAL_TYPES:
@@ -31,10 +38,7 @@ def extract_text(filename: str, content: bytes) -> str:
         )
     try:
         if extension == ".txt":
-            try:
-                text = content.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                text = content.decode("cp1252")
+            text = _decode_plain_text(content)
         elif extension == ".docx":
             from docx import Document
 
@@ -126,10 +130,7 @@ def extract_lesson_features(filename: str, content: bytes) -> dict[str, list[str
                     if line and normal_size and line_size >= normal_size * 1.15:
                         features["heading_terms"].append(line)
     else:
-        try:
-            text = content.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text = content.decode("cp1252")
+        text = _decode_plain_text(content)
         for line in text.splitlines():
             stripped = line.strip()
             if re.match(r"^#{1,6}\s+", stripped) or (
