@@ -1,6 +1,6 @@
 {
-  "version": "2.0.2",
-  "changelog": "Improved updater downloads with retry and resume support.",
-  "installer_url": "https://github.com/seanlordtrillo-ops/Clinthinker/releases/download/v2.0.2/Clinthinker-Setup-2.0.2.exe",
-  "sha256": "19b663468d2da7ff73282f9ee608d568206f211ec3a2c58bdf016124e920a39c"
+  "version": "2.0.3",
+  "changelog": "Describe what changed in 2.0.3.",
+  "installer_url": "https://github.com/seanlordtrillo-ops/Clinthinker/releases/download/v2.0.3/Clinthinker-Setup-2.0.3.exe",
+  "sha256": "be40e05affa668f1783dd5f370f51378b14e18f302e062f074274929bd593eec"
 }
